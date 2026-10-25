@@ -1,0 +1,4 @@
+# Python dependencies for visualize_force_vector.py (Python 3.8+)
+numpy>=1.21
+matplotlib>=3.5
+pyserial>=3.5      # not needed for --demo mode
