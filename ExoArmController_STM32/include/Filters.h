@@ -1,70 +1,30 @@
 #ifndef FILTERS_H
 #define FILTERS_H
 
-#include <Arduino.h>
+#include <cmath>
+#include <algorithm>
+#include <cstdint>
 
-// Exponential Moving Average (Low Pass) Filter
 class LowPassFilter {
 public:
-    LowPassFilter(float alpha, float initialVal = 0.0f)
-        : alpha(alpha), filteredValue(initialVal), initialized(false) {}
-
-    void setAlpha(float newAlpha) {
-        alpha = constrain(newAlpha, 0.01f, 1.0f);
+    LowPassFilter(float cutoff_freq, float sample_time) {
+        float rc = 1.0f / (2.0f * 3.14159265f * cutoff_freq);
+        alpha = sample_time / (rc + sample_time);
+        prev_output = 0.0f;
     }
 
     float update(float input) {
-        if (!initialized) {
-            filteredValue = input;
-            initialized = true;
-        } else {
-            filteredValue = (alpha * input) + ((1.0f - alpha) * filteredValue);
-        }
-        return filteredValue;
+        prev_output = prev_output + alpha * (input - prev_output);
+        return prev_output;
     }
 
-    float getValue() const { return filteredValue; }
-    void reset(float val = 0.0f) { filteredValue = val; initialized = false; }
+    void reset(float val = 0.0f) {
+        prev_output = val;
+    }
 
 private:
-    float alpha; // Smoothing factor: closer to 0 = heavier smoothing, closer to 1 = faster response
-    float filteredValue;
-    bool  initialized;
+    float alpha;
+    float prev_output;
 };
-
-// Slew Rate Limiter (limits maximum rate of change per cycle)
-class SlewRateLimiter {
-public:
-    SlewRateLimiter(float maxStepPerCycle) : maxStep(maxStepPerCycle), currentVal(0.0f) {}
-
-    void setMaxStep(float step) { maxStep = step; }
-
-    float update(float target) {
-        float delta = target - currentVal;
-        if (delta > maxStep) {
-            currentVal += maxStep;
-        } else if (delta < -maxStep) {
-            currentVal -= maxStep;
-        } else {
-            currentVal = target;
-        }
-        return currentVal;
-    }
-
-    float getValue() const { return currentVal; }
-    void reset(float val = 0.0f) { currentVal = val; }
-
-private:
-    float maxStep;
-    float currentVal;
-};
-
-// Apply symmetric deadband
-inline float applyDeadband(float value, float threshold) {
-    if (abs(value) < threshold) {
-        return 0.0f;
-    }
-    return value;
-}
 
 #endif // FILTERS_H

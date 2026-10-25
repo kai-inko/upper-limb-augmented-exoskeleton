@@ -1,73 +1,25 @@
 #include "PIDController.h"
 
-PIDController::PIDController(float kp, float ki, float kd, float outMin, float outMax)
-    : Kp(kp), Ki(ki), Kd(kd),
-      outMin(outMin), outMax(outMax),
-      iLimitMin(outMin * 0.7f), iLimitMax(outMax * 0.7f),
-      integralSum(0.0f), lastMeasurement(0.0f), lastDerivative(0.0f),
-      isFirstRun(true), pTerm(0.0f), iTerm(0.0f), dTerm(0.0f) {}
+PIDController::PIDController(float kp, float ki, float kd, float out_min, float out_max)
+    : kp_(kp), ki_(ki), kd_(kd), out_min_(out_min), out_max_(out_max), integral_(0.0f), prev_error_(0.0f) {}
 
-void PIDController::setTunings(float kp, float ki, float kd) {
-    Kp = kp;
-    Ki = ki;
-    Kd = kd;
-}
+float PIDController::compute(float setpoint, float measured, float dt) {
+    if (dt <= 0.0f) return 0.0f;
 
-void PIDController::setOutputLimits(float minVal, float maxVal) {
-    outMin = minVal;
-    outMax = maxVal;
-}
+    float error = setpoint - measured;
+    integral_ += error * dt;
+    
+    // Anti-windup clamping
+    integral_ = std::clamp(integral_, out_min_, out_max_);
 
-void PIDController::setIntegralLimits(float minVal, float maxVal) {
-    iLimitMin = minVal;
-    iLimitMax = maxVal;
+    float derivative = (error - prev_error_) / dt;
+    float output = (kp_ * error) + (ki_ * integral_) + (kd_ * derivative);
+
+    prev_error_ = error;
+    return std::clamp(output, out_min_, out_max_);
 }
 
 void PIDController::reset() {
-    integralSum = 0.0f;
-    lastDerivative = 0.0f;
-    isFirstRun = true;
-    pTerm = 0.0f;
-    iTerm = 0.0f;
-    dTerm = 0.0f;
-}
-
-float PIDController::compute(float setpoint, float measurement, float dt_seconds) {
-    if (dt_seconds <= 0.0f) {
-        dt_seconds = 0.02f; // Fallback to 50Hz if timing anomaly occurs
-    }
-
-    float error = setpoint - measurement;
-
-    // Proportional Term
-    pTerm = Kp * error;
-
-    // Integral Term with Anti-Windup Clamping
-    integralSum += error * dt_seconds;
-    if (integralSum > iLimitMax) integralSum = iLimitMax;
-    if (integralSum < iLimitMin) integralSum = iLimitMin;
-    iTerm = Ki * integralSum;
-
-    // Derivative Term on Measurement (eliminates derivative kick on setpoint step changes)
-    if (isFirstRun) {
-        lastMeasurement = measurement;
-        lastDerivative = 0.0f;
-        isFirstRun = false;
-    }
-
-    float rawDerivative = -(measurement - lastMeasurement) / dt_seconds;
-    lastMeasurement = measurement;
-
-    // 1st-order low-pass filter on derivative (cutoff ~ 10Hz) to prevent high-frequency noise amplification
-    const float alpha = 0.7f;
-    float filteredDerivative = alpha * rawDerivative + (1.0f - alpha) * lastDerivative;
-    lastDerivative = filteredDerivative;
-    dTerm = Kd * filteredDerivative;
-
-    // Sum and constrain to actuator saturation limits
-    float output = pTerm + iTerm + dTerm;
-    if (output > outMax) output = outMax;
-    if (output < outMin) output = outMin;
-
-    return output;
+    integral_ = 0.0f;
+    prev_error_ = 0.0f;
 }
