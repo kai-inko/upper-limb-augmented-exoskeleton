@@ -1,1 +1,1 @@
-# upper-limb-augmented-exoskeleton
+Upper limb exoskeleton
