@@ -110,29 +110,32 @@ class ExoArmDataReceiver:
             self.accel_x = math.sin(phi_rad)
             self.accel_y = math.cos(phi_rad)
             self.accel_z = 0.05 * math.sin(current_t * 3.0)
-            self.pwm = int(60.0 * math.cos(current_t * 1.2))
+            self.pwm = int(250.0 * math.cos(current_t * 1.2))
             self.mode = 1
             self.status = "SIMULATED_DEMO"
         else:
             if self.serial_port and self.serial_port.is_open:
-                try:
-                    while self.serial_port.in_waiting:
+                while self.serial_port.in_waiting:
+                    try:
                         line = self.serial_port.readline().decode('utf-8', errors='ignore').strip()
-                        if line.startswith("$TELEM,"):
-                            # Packet: $TELEM,ANGLE,WEIGHT_KG,FORCE_N,ACCEL_X,ACCEL_Y,ACCEL_Z,PWM,MODE,STATUS
-                            parts = line.split(',')
-                            if len(parts) >= 10:
-                                self.angle_deg = float(parts[1])
-                                self.weight_kg = float(parts[2])
-                                self.force_n = float(parts[3])
-                                self.accel_x = float(parts[4])
-                                self.accel_y = float(parts[5])
-                                self.accel_z = float(parts[6])
-                                self.pwm = int(parts[7])
-                                self.mode = int(parts[8])
-                                self.status = parts[9]
-                except Exception as err:
-                    print(f"[SERIAL ERR] {err}")
+                        if not line.startswith("$TELEM,"):
+                            continue
+                        # Packet: $TELEM,ANGLE,WEIGHT_KG,FORCE_N,ACCEL_X,ACCEL_Y,ACCEL_Z,PWM,MODE,STATUS
+                        parts = line.split(',')
+                        if len(parts) < 10:
+                            continue
+                        vals = (float(parts[1]), float(parts[2]), float(parts[3]),
+                                float(parts[4]), float(parts[5]), float(parts[6]),
+                                int(parts[7]), int(parts[8]))
+                        (self.angle_deg, self.weight_kg, self.force_n,
+                         self.accel_x, self.accel_y, self.accel_z,
+                         self.pwm, self.mode) = vals
+                        self.status = parts[9]
+                    except (ValueError, UnicodeDecodeError):
+                        continue            # one corrupt line must not discard the rest of the buffer
+                    except Exception as err:
+                        print(f"[SERIAL ERR] {err}")
+                        break
 
         # Append to strip chart buffers
         self.time_hist.append(current_t)
@@ -146,8 +149,9 @@ class ExoArmDataReceiver:
 # VISUALIZATION GUI (MATPLOTLIB)
 # ======================================================================================
 class ExoArmVisualizer:
-    def __init__(self, data_receiver):
+    def __init__(self, data_receiver, pwm_max=1000):
         self.data = data_receiver
+        self.pwm_max = pwm_max
         self.forearm_len = 0.22  # meters
 
         # Configure Matplotlib dark theme
@@ -229,9 +233,9 @@ class ExoArmVisualizer:
         # 3. Motor PWM Chart
         ax3 = self.ax_pwm
         ax3.set_title("BTS7960 Motor Command (PWM)", fontsize=10, fontweight='bold', color='#00e676')
-        ax3.set_ylabel("PWM Duty (-255 to 255)", fontsize=8)
+        ax3.set_ylabel(f"PWM (permille, +/-{self.pwm_max})", fontsize=8)
         ax3.set_xlabel("Time (s)", fontsize=8)
-        ax3.set_ylim(-260, 260)
+        ax3.set_ylim(-1.05 * self.pwm_max, 1.05 * self.pwm_max)
         ax3.grid(True, linestyle=':', alpha=0.3)
         self.line_pwm, = ax3.plot([], [], color='#00e676', linewidth=1.8)
 
@@ -328,6 +332,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="ExoArm Real-Time Force Vector & Kinematics Visualizer")
     parser.add_argument('--port', type=str, default=None, help="Serial COM Port (e.g. COM3 or /dev/ttyUSB0)")
     parser.add_argument('--baud', type=int, default=115200, help="Serial Baudrate (default: 115200)")
+    parser.add_argument('--pwm-max', type=int, default=1000, help="Full-scale PWM in telemetry (permille, default 1000)")
     parser.add_argument('--demo', action='store_true', help="Run in simulated demo mode without hardware")
     args = parser.parse_args()
 
@@ -340,5 +345,5 @@ if __name__ == '__main__':
         print("[MODE] Attempting Hardware Serial Connection (use --demo for simulation).")
 
     receiver = ExoArmDataReceiver(port=args.port, baudrate=args.baud, demo_mode=args.demo)
-    app = ExoArmVisualizer(receiver)
+    app = ExoArmVisualizer(receiver, pwm_max=args.pwm_max)
     app.run()

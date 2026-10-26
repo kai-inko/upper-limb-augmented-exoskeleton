@@ -1,116 +1,202 @@
-#include "stm32f1xx_hal.h"
+// ExoArm main application: 100 Hz force-following assist controller with layered safety.
+//
+//   IDLE   : driver disabled, 0 % PWM. MODE button -> ASSIST.
+//   ASSIST : load-cell force (user pushing the cuff) drives a PID -> motor assists in the push direction.
+//   FAULT  : latched. Driver disabled. Cleared only with E-stop released + MODE press.
+#include "Board.h"
 #include "Config.h"
 #include "IMU_GY521.h"
+#include "HX711_LoadCell.h"
 #include "PIDController.h"
 #include "SafetyWatchdog.h"
+#include "Filters.h"
+#include "Telemetry.h"
 
-I2C_HandleTypeDef hi2c1;
-TIM_HandleTypeDef htim1;
+enum class State : uint8_t { IDLE = 0, ASSIST = 1, FAULT = 2 };
+enum class Fault : uint8_t { NONE = 0, ESTOP, IMU, LOADCELL, OVERFORCE };
 
-void SystemClock_Config(void);
-static void MX_GPIO_Init(void);
-static void MX_I2C1_Init(void);
-static void MX_TIM1_Init(void);
-
-PIDController pid(2.5f, 0.1f, 0.05f, -100.0f, 100.0f);
-SafetyWatchdog watchdog(WATCHDOG_TIMEOUT_MS);
-IMU_GY521 imu(&hi2c1, MPU6050_I2C_ADDR);
-
-int main(void) {
-    HAL_Init();
-    SystemClock_Config();
-
-    MX_GPIO_Init();
-    MX_I2C1_Init();
-    MX_TIM1_Init();
-
-    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
-
-    imu.begin();
-    uint32_t last_tick = HAL_GetTick();
-
-    while (1) {
-        // Enforce 100Hz deterministic control loop
-        if ((HAL_GetTick() - last_tick) >= 10) {
-            last_tick = HAL_GetTick();
-
-            // Read E-Stop
-            if (HAL_GPIO_ReadPin(ESTOP_BUTTON_PORT, ESTOP_BUTTON_PIN) == GPIO_PIN_RESET) {
-                // E-Stop Triggered: Stop Motor
-                __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-                __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
-                continue;
-            }
-
-            float ax, ay, az, gx, gy, gz;
-            if (imu.readSensor(ax, ay, az, gx, gy, gz)) {
-                float output = pid.compute(0.0f, ay, CONTROL_LOOP_DT_SEC);
-                
-                // Drive BTS7960 PWM
-                if (output >= 0) {
-                    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint32_t)output);
-                    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
-                } else {
-                    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-                    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (uint32_t)(-output));
-                }
-            }
-
-            watchdog.kick();
-        }
+static const char* faultName(Fault f) {
+    switch (f) {
+        case Fault::ESTOP:     return "ESTOP";
+        case Fault::IMU:       return "IMU_FAIL";
+        case Fault::LOADCELL:  return "LC_FAIL";
+        case Fault::OVERFORCE: return "OVERFORCE";
+        default:               return "OK";
     }
 }
 
-void SystemClock_Config(void) {
-    // Configures 72MHz HSE Clock for BluePill (F103)
+// ---- Objects ----
+static IMU_GY521      imu(&hi2c1, MPU6050_I2C_ADDR);
+static HX711_LoadCell loadcell(HX711_DOUT_PORT, HX711_DOUT_PIN, HX711_SCK_PORT, HX711_SCK_PIN);
+static PIDController  pid(PID_KP, PID_KI, PID_KD, -(float)ASSIST_PWM_LIMIT, (float)ASSIST_PWM_LIMIT);
+static LowPassFilter  forceLpf(FORCE_LPF_CUTOFF_HZ, CONTROL_LOOP_DT_SEC);
+static ComplementaryFilter angleFilter(IMU_COMP_ALPHA);
+static SlewLimiter    slew(ASSIST_SLEW_PER_TICK);
+static SafetyWatchdog imuWd(IMU_TIMEOUT_MS);
+static SafetyWatchdog loadWd(LOADCELL_TIMEOUT_MS);
+static IWDG_HandleTypeDef hiwdg;
+
+// ---- State ----
+static State g_state = State::IDLE;
+static Fault g_fault = Fault::NONE;
+static float g_ax = 0, g_ay = 0, g_az = 0;
+static float g_angle = 90.0f;
+static float g_weight_kg = 0, g_force_n = 0;
+static int   g_pwm = 0;
+static uint32_t g_tick = 0;
+
+static void enterFault(Fault f) {
+    Motor_Safe();
+    pid.reset();
+    slew.reset();
+    g_pwm = 0;
+    if (g_state != State::FAULT) {                 // keep the FIRST cause
+        g_state = State::FAULT;
+        g_fault = f;
+    }
 }
 
-static void MX_GPIO_Init(void) {
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-    // Configure E-Stop Pin
-    GPIO_InitStruct.Pin = ESTOP_BUTTON_PIN;
-    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
-    HAL_GPIO_Init(ESTOP_BUTTON_PORT, &GPIO_InitStruct);
-
-    // Configure Motor Enable Pin
-    GPIO_InitStruct.Pin = MOTOR_EN_PIN;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(MOTOR_EN_PORT, &GPIO_InitStruct);
-
-    HAL_GPIO_WritePin(MOTOR_EN_PORT, MOTOR_EN_PIN, GPIO_PIN_SET);
+static void startHardwareWatchdog() {
+    hiwdg.Instance       = IWDG;
+    hiwdg.Init.Prescaler = IWDG_PRESCALER_32;
+    hiwdg.Init.Reload    = IWDG_RELOAD_COUNTS;
+    HAL_IWDG_Init(&hiwdg);                          // cannot be stopped once started
 }
 
-static void MX_I2C1_Init(void) {
-    __HAL_RCC_I2C1_CLK_ENABLE();
-    hi2c1.Instance = I2C1;
-    hi2c1.Init.ClockSpeed = 400000;
-    hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
-    hi2c1.Init.OwnAddress1 = 0;
-    hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-    HAL_I2C_Init(&hi2c1);
+// Debounced MODE-button press event (30 ms stable, fires once per press)
+static bool modePressedEvent() {
+    static uint8_t stable = 0;
+    static bool    armed  = true;
+    if (ModeButton_Pressed()) {
+        if (stable < 255) stable++;
+        if (stable >= 3 && armed) { armed = false; return true; }
+    } else {
+        stable = 0;
+        armed  = true;
+    }
+    return false;
 }
 
-static void MX_TIM1_Init(void) {
-    __HAL_RCC_TIM1_CLK_ENABLE();
-    TIM_OC_InitTypeDef sConfigOC = {0};
+static void bootSequence() {
+    Motor_Safe();
+    Uart_Write("\r\n[ExoArm] boot - keep the arm still and UNLOADED\r\n");
 
-    htim1.Instance = TIM1;
-    htim1.Init.Prescaler = 71;
-    htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-    htim1.Init.Period = 1000;
-    HAL_TIM_PWM_Init(&htim1);
+    bool imuOk = imu.begin();
+    if (imuOk) imuOk = imu.calibrateGyro(200);
+    Uart_Write(imuOk ? "[ExoArm] IMU ok, gyro calibrated\r\n" : "[ExoArm] IMU FAILED\r\n");
 
-    sConfigOC.OCMode = TIM_OCMODE_PWM1;
-    sConfigOC.Pulse = 0;
-    sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-    HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_1);
-    HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_2);
+    loadcell.begin();
+    loadcell.setScale(LOADCELL_SCALE_COUNTS_PER_KG);
+    bool lcOk = loadcell.tare(10);
+    Uart_Write(lcOk ? "[ExoArm] load cell ok, tared\r\n" : "[ExoArm] LOAD CELL FAILED\r\n");
+
+    float ax, ay, az, gx, gy, gz;
+    if (imuOk && imu.readSensor(ax, ay, az, gx, gy, gz))
+        angleFilter.reset(elbowAngleFromAccel(ax, ay) + IMU_ANGLE_OFFSET_DEG);
+
+    imuWd.kick();
+    loadWd.kick();
+    if (!imuOk)      enterFault(Fault::IMU);
+    else if (!lcOk)  enterFault(Fault::LOADCELL);
+}
+
+static void controlStep() {
+    g_tick++;
+    const bool estop = Estop_Pressed();
+    const bool modeEvt = modePressedEvent();
+
+    // ---------- 1. Sensors ----------
+    float ax, ay, az, gx, gy, gz;
+    if (imu.readSensor(ax, ay, az, gx, gy, gz)) {
+        imuWd.kick();
+        g_ax = ax; g_ay = ay; g_az = az;
+        g_angle = angleFilter.update(IMU_GYRO_SIGN * gz,
+                                     elbowAngleFromAccel(ax, ay) + IMU_ANGLE_OFFSET_DEG,
+                                     accelMagnitudeValid(ax, ay, az), CONTROL_LOOP_DT_SEC);
+    }
+
+    int32_t raw;
+    if (loadcell.dataReady() && loadcell.read(raw, 0)) {      // non-blocking: HX711 only makes 10 samples/s
+        loadWd.kick();
+        g_weight_kg = LOADCELL_FORCE_SIGN * loadcell.rawToUnits(raw);
+        g_force_n   = g_weight_kg * GRAVITY_MS2;
+    }
+    const float force_f = forceLpf.update(g_force_n);
+
+    // ---------- 2. Supervision (any state) ----------
+    if (estop)                       enterFault(Fault::ESTOP);
+    else if (imuWd.expired())        enterFault(Fault::IMU);
+    else if (loadWd.expired())       enterFault(Fault::LOADCELL);
+    else if (g_state == State::ASSIST && (force_f > FORCE_FAULT_N || force_f < -FORCE_FAULT_N))
+                                     enterFault(Fault::OVERFORCE);
+
+    // ---------- 3. State machine ----------
+    switch (g_state) {
+    case State::IDLE:
+        Motor_Safe();
+        if (modeEvt) {
+            pid.reset(); slew.reset(); forceLpf.reset(g_force_n);
+            Motor_Enable(true);
+            g_state = State::ASSIST;
+        }
+        break;
+
+    case State::ASSIST: {
+        if (modeEvt) { Motor_Safe(); g_state = State::IDLE; g_pwm = 0; break; }
+
+        // Force-following: drive the measured interaction force to zero by moving WITH the user.
+        // error = 0 - (-F) = +F  ->  positive output = UP.
+        float f   = applyDeadband(force_f, FORCE_DEADBAND_N);
+        float cmd = pid.compute(0.0f, -f, CONTROL_LOOP_DT_SEC) * ASSIST_GAIN;
+
+        // Soft joint limits: block motion INTO a limit, still allow motion back out of it.
+        if (g_angle >= ANGLE_MAX_DEG && cmd > 0.0f) cmd = 0.0f;
+        if (g_angle <= ANGLE_MIN_DEG && cmd < 0.0f) cmd = 0.0f;
+
+        cmd = clampf(cmd, -(float)ASSIST_PWM_LIMIT, (float)ASSIST_PWM_LIMIT);
+        g_pwm = (int)slew.update(cmd);
+        Motor_Set((int16_t)g_pwm);
+        break;
+    }
+
+    case State::FAULT:
+        Motor_Safe();
+        if (modeEvt && !estop) {                    // operator acknowledged; supervision re-faults if still bad
+            g_fault = Fault::NONE;
+            g_state = State::IDLE;
+        }
+        break;
+    }
+
+    // ---------- 4. Status LED ----------
+    switch (g_state) {
+        case State::IDLE:   Led_Set((g_tick % 100) < 10); break;   // short blip once a second
+        case State::ASSIST: Led_Set(true); break;                  // solid
+        case State::FAULT:  Led_Set((g_tick % 20) < 10);  break;   // 5 Hz blink
+    }
+
+    // ---------- 5. Telemetry (20 Hz, interrupt driven - never blocks the loop) ----------
+    if ((g_tick % TELEMETRY_EVERY_N_TICKS) == 0) {
+        TelemetryPacket p = { g_angle, g_weight_kg, g_force_n, g_ax, g_ay, g_az,
+                              g_pwm, (int)g_state, faultName(g_fault) };
+        char buf[128];
+        size_t n = Telemetry_Format(buf, sizeof(buf), p);
+        Uart_WriteAsync(buf, n);
+    }
+}
+
+int main(void) {
+    Board_Init();               // clock, GPIO, PWM (0 %, driver disabled), I2C, UART
+    bootSequence();
+    startHardwareWatchdog();    // after the slow boot steps
+
+    uint32_t next = HAL_GetTick() + CONTROL_LOOP_PERIOD_MS;
+    while (1) {
+        while ((int32_t)(HAL_GetTick() - next) < 0) { __WFI(); }   // sleep until the next SysTick
+        next += CONTROL_LOOP_PERIOD_MS;
+        if ((int32_t)(HAL_GetTick() - next) > 5 * CONTROL_LOOP_PERIOD_MS) next = HAL_GetTick();  // overrun: resync
+
+        HAL_IWDG_Refresh(&hiwdg);
+        controlStep();
+    }
 }

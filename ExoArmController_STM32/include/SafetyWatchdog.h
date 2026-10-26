@@ -3,28 +3,16 @@
 
 #include "stm32f1xx_hal.h"
 
+// Data-freshness monitor. kick() ONLY when a VALID sample arrived; expired() tells the
+// supervisor the sensor went silent. (The independent hardware IWDG guards the MCU itself.)
 class SafetyWatchdog {
 public:
-    SafetyWatchdog(uint32_t timeout_ms) : timeout_ms_(timeout_ms), last_kick_time_(0), triggered_(false) {}
-
-    void kick() {
-        last_kick_time_ = HAL_GetTick();
-        triggered_ = false;
-    }
-
-    bool checkTimeout() {
-        if ((HAL_GetTick() - last_kick_time_) > timeout_ms_) {
-            triggered_ = true;
-        }
-        return triggered_;
-    }
-
-    bool isTriggered() const { return triggered_; }
-
+    explicit SafetyWatchdog(uint32_t timeout_ms) : timeout_ms_(timeout_ms), last_kick_(0) {}
+    void kick()  { last_kick_ = HAL_GetTick(); }
+    bool expired() const { return (HAL_GetTick() - last_kick_) > timeout_ms_; }
 private:
     uint32_t timeout_ms_;
-    uint32_t last_kick_time_;
-    bool triggered_;
+    uint32_t last_kick_;
 };
 
 #endif // SAFETY_WATCHDOG_H
