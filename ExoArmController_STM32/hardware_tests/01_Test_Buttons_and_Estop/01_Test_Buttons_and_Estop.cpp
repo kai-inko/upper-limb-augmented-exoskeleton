@@ -26,3 +26,4 @@ int main(void) {
         HAL_Delay(10);
     }
 }
+

@@ -1,4 +1,4 @@
-// TEST 04 - BTS7960 motor driver (RPWM = PA8, LPWM = PA9, R_EN+L_EN = PB12)
+// TEST 06 - BTS7960 motor driver (RPWM = PA8, LPWM = PA9, R_EN+L_EN = PB12)
 // SAFETY: run with the exoskeleton arm UNLOADED and clear of your body. Keep a hand on the E-stop.
 // Sequence (after you press MODE): ramp UP to TEST_PWM_MAX, ramp down, pause, ramp DOWN, ramp down, repeat.
 // The E-stop immediately zeroes PWM and disables the driver; press MODE to restart.
@@ -41,7 +41,7 @@ static bool ramp(int dir, const char* name) {
 int main(void) {
     Board_Init();
     Motor_Safe();
-    Uart_Write("\r\n[TEST 04] BTS7960 motor driver\r\n");
+    Uart_Write("\r\n[TEST 06] BTS7960 motor driver\r\n");
 
     while (1) {
         waitMode();

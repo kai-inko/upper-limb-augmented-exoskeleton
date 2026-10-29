@@ -1,7 +1,7 @@
 #ifndef SAFETY_WATCHDOG_H
 #define SAFETY_WATCHDOG_H
 
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 
 // Data-freshness monitor. kick() ONLY when a VALID sample arrived; expired() tells the
 // supervisor the sensor went silent. (The independent hardware IWDG guards the MCU itself.)

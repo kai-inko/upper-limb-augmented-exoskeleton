@@ -1,7 +1,7 @@
 #ifndef HX711_LOADCELL_H
 #define HX711_LOADCELL_H
 
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 #include <cstdint>
 
 class HX711_LoadCell {

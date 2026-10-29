@@ -1,16 +1,18 @@
 #ifndef BOARD_H
 #define BOARD_H
 
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 #include <cstddef>
 #include <cstdint>
 
 // Peripheral handles (defined in board.cpp)
-extern I2C_HandleTypeDef  hi2c1;
-extern TIM_HandleTypeDef  htim1;
+extern I2C_HandleTypeDef  hi2c1;    // MPU-6050 (upper arm)
+extern I2C_HandleTypeDef  hi2c2;    // AS5600   (elbow / forearm)
+extern TIM_HandleTypeDef  htim1;    // BTS7960 PWM
+extern TIM_HandleTypeDef  htim3;    // optical encoder, hardware quadrature (X4) decoder
 extern UART_HandleTypeDef huart2;
 
-// One call brings the whole board up: HAL, 72 MHz clock, GPIO, TIM1 PWM, I2C1, USART2.
+// One call brings the whole board up: HAL, 100 MHz clock, GPIO, TIM1 PWM, TIM3 encoder, I2C1, I2C2, USART2.
 // The motor driver is left DISABLED with 0 % duty.
 void Board_Init(void);
 void SystemClock_Config(void);

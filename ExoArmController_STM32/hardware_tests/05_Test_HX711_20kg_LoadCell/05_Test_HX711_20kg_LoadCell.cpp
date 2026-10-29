@@ -1,4 +1,4 @@
-// TEST 03 - HX711 + 20 kg load cell (DOUT = PB14, SCK = PB15)
+// TEST 05 - HX711 + 20 kg load cell (DOUT = PB14, SCK = PB15)
 // 1) Leave the cell UNLOADED; it tares after 3 s.
 // 2) Readings are printed in kg and N.
 // 3) CALIBRATION: hang a known mass (CAL_MASS_KG) and press MODE. The printed counts-per-kg
@@ -27,7 +27,7 @@ static void tareNow() {
 int main(void) {
     Board_Init();
     Motor_Safe();
-    Uart_Write("\r\n[TEST 03] HX711 load cell\r\n");
+    Uart_Write("\r\n[TEST 05] HX711 load cell\r\n");
 
     loadcell.begin();
     loadcell.setScale(LOADCELL_SCALE_COUNTS_PER_KG);

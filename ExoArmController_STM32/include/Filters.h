@@ -66,8 +66,16 @@ inline float applyDeadband(float x, float band) {
 
 inline float clampf(float x, float lo, float hi) { return x < lo ? lo : (x > hi ? hi : x); }
 
-// Elbow angle from gravity only. 0 deg = hanging down (ax = -1 g), 90 deg = horizontal (ay = +1 g).
-inline float elbowAngleFromAccel(float ax, float ay) {
+// Wraps an angle into (-180, +180].
+inline float wrap180(float a) {
+    while (a >  180.0f) a -= 360.0f;
+    while (a <= -180.0f) a += 360.0f;
+    return a;
+}
+
+// Limb inclination from gravity only (MPU-6050 on the UPPER ARM).
+// 0 deg = hanging down (ax = -1 g), 90 deg = horizontal forward (ay = +1 g), 180 deg = pointing up.
+inline float limbAngleFromAccel(float ax, float ay) {
     return std::atan2(ay, -ax) * 57.2957795f;
 }
 inline bool accelMagnitudeValid(float ax, float ay, float az) {

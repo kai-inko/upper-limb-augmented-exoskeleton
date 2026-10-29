@@ -1,9 +1,11 @@
 #ifndef IMU_GY521_H
 #define IMU_GY521_H
 
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 #include <cstdint>
 
+// MPU-6050 on a GY-521 breakout. In this build it is mounted on the UPPER ARM and gives the
+// upper-arm inclination (gravity reference); the elbow joint angle comes from the encoders.
 class IMU_GY521 {
 public:
     IMU_GY521(I2C_HandleTypeDef* hi2c, uint16_t addr);

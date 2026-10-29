@@ -17,6 +17,14 @@ LineBuilder& LineBuilder::u(uint32_t v) {
     return *this;
 }
 
+LineBuilder& LineBuilder::x(uint32_t v, uint8_t digits) {
+    static const char hex[] = "0123456789ABCDEF";
+    str("0x");
+    if (digits > 8) digits = 8;
+    for (int k = (int)digits - 1; k >= 0; k--) ch(hex[(v >> (4 * k)) & 0xF]);
+    return *this;
+}
+
 LineBuilder& LineBuilder::i(int32_t v) {
     if (v < 0) { ch('-'); return u((uint32_t)(-(int64_t)v)); }
     return u((uint32_t)v);
@@ -52,6 +60,8 @@ size_t Telemetry_Format(char* buf, size_t cap, const TelemetryPacket& p) {
     LineBuilder b(buf, cap);
     b.str("$TELEM,").f(p.angle_deg, 1).ch(',').f(p.weight_kg, 3).ch(',').f(p.force_n, 2).ch(',')
      .f(p.ax, 2).ch(',').f(p.ay, 2).ch(',').f(p.az, 2).ch(',')
-     .i(p.pwm).ch(',').i(p.mode).ch(',').str(p.status).str("\r\n");
+     .i(p.pwm).ch(',').i(p.mode).ch(',').str(p.status).ch(',')
+     .f(p.ua_deg, 1).ch(',').f(p.elbow_deg, 1).ch(',').f(p.elbow_dps, 1).ch(',').f(p.mismatch_deg, 1).ch(',')
+     .f(p.wrist_x_cm, 1).ch(',').f(p.wrist_y_cm, 1).str("\r\n");
     return b.len();
 }

@@ -108,5 +108,5 @@ void HX711_LoadCell::powerUp() {
 }
 
 void HX711_LoadCell::shortDelay() const {
-    for (volatile int i = 0; i < 5; i++) { __NOP(); }           // ~0.5 us at 72 MHz (spec: 0.2-50 us)
+    for (volatile int i = 0; i < 12; i++) { __NOP(); }          // roughly 0.5-1 us at 100 MHz (spec: 0.2-50 us)
 }
